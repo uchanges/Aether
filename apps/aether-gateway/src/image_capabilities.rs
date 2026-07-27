@@ -13,10 +13,7 @@ pub(crate) fn openai_image_provider_max_generation_count(provider_type: &str) ->
         GROK_OPENAI_IMAGE_MAX_GENERATION_COUNT
     } else if matches!(
         provider_type.trim().to_ascii_lowercase().as_str(),
-        // Custom providers can expose OpenAI-compatible Images APIs too. Their
-        // actual compatibility remains the operator's responsibility, but the
-        // gateway must not rule out valid multi-image requests before routing.
-        "openai" | "codex" | "custom"
+        "openai" | "codex"
     ) {
         OPENAI_IMAGE_MAX_GENERATION_COUNT
     } else {
@@ -61,7 +58,7 @@ mod tests {
         assert_eq!(openai_image_provider_max_generation_count("grok"), 4);
         assert_eq!(openai_image_provider_max_generation_count("openai"), 10);
         assert_eq!(openai_image_provider_max_generation_count("codex"), 10);
-        assert_eq!(openai_image_provider_max_generation_count("custom"), 10);
+        assert_eq!(openai_image_provider_max_generation_count("custom"), 1);
         assert_eq!(
             openai_image_provider_max_generation_count_for_model("openai", Some("dall-e-3")),
             1
