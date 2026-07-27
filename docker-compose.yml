@@ -10,7 +10,7 @@ services:
       - .env
     environment:
       DATABASE_URL: postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@${DB_HOST:-base-postgresql}:${DB_PORT:-5432}/${DB_NAME:-aether}
-      REDIS_URL: redis://:${REDIS_PASSWORD}@${REDIS_HOST:-1panel-redis}:${REDIS_PORT:-6379}/0
+      REDIS_URL: redis://:${REDIS_PASSWORD}@${REDIS_HOST:-base-redis}:${REDIS_PORT:-6379}/0
       TZ: Asia/Shanghai
       AETHER_BASE_DIR: /opt/aether
       # This deployment runs a locally built image from this repository.
