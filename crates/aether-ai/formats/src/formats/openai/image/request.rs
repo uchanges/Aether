@@ -628,7 +628,11 @@ pub fn build_openai_image_api_provider_multipart_request(
             &mut bytes,
             &boundary,
             "image",
-            &format!("image-{}.{}", index + 1, image_filename_extension(&mime_type)),
+            &format!(
+                "image-{}.{}",
+                index + 1,
+                image_filename_extension(&mime_type)
+            ),
             &mime_type,
             &data,
         );
@@ -661,18 +665,16 @@ fn multipart_text_value(value: &Value) -> Option<String> {
 }
 
 fn multipart_image_data(value: &Value) -> Option<(String, Vec<u8>)> {
-    let image_url = value
-        .as_object()?
-        .get("image_url")?
-        .as_str()?
-        .trim();
+    let image_url = value.as_object()?.get("image_url")?.as_str()?.trim();
     let encoded = image_url.strip_prefix("data:")?;
     let (metadata, data) = encoded.split_once(',')?;
     let mime_type = metadata.strip_suffix(";base64")?.trim();
     if !mime_type.starts_with("image/") {
         return None;
     }
-    let data = base64::engine::general_purpose::STANDARD.decode(data.trim()).ok()?;
+    let data = base64::engine::general_purpose::STANDARD
+        .decode(data.trim())
+        .ok()?;
     Some((mime_type.to_string(), data))
 }
 
@@ -687,8 +689,10 @@ fn image_filename_extension(mime_type: &str) -> &'static str {
 
 fn append_multipart_text_field(bytes: &mut Vec<u8>, boundary: &str, name: &str, value: &str) {
     bytes.extend_from_slice(
-        format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n")
-            .as_bytes(),
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
+        )
+        .as_bytes(),
     );
 }
 
@@ -2488,13 +2492,22 @@ mod tests {
             .decode(multipart.body_bytes_base64)
             .expect("multipart body should be base64 encoded");
 
-        assert!(multipart.content_type.starts_with("multipart/form-data; boundary="));
+        assert!(multipart
+            .content_type
+            .starts_with("multipart/form-data; boundary="));
         assert!(body.starts_with(format!("--{boundary}\\r\\n").as_bytes()));
-        assert!(body.windows(b"name=\"model\"\r\n\r\nmapped-edit-model".len()).any(|part| {
-            part == b"name=\"model\"\r\n\r\nmapped-edit-model"
-        }));
-        assert_eq!(body.windows(b"name=\"image\"".len()).filter(|part| *part == b"name=\"image\"").count(), 2);
-        assert!(body.windows(b"name=\"mask\"".len()).any(|part| part == b"name=\"mask\""));
+        assert!(body
+            .windows(b"name=\"model\"\r\n\r\nmapped-edit-model".len())
+            .any(|part| { part == b"name=\"model\"\r\n\r\nmapped-edit-model" }));
+        assert_eq!(
+            body.windows(b"name=\"image\"".len())
+                .filter(|part| *part == b"name=\"image\"")
+                .count(),
+            2
+        );
+        assert!(body
+            .windows(b"name=\"mask\"".len())
+            .any(|part| part == b"name=\"mask\""));
         assert!(body.ends_with(format!("--{boundary}--\\r\\n").as_bytes()));
     }
 

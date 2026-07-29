@@ -18,8 +18,8 @@ use crate::ai_serving::transport::{
 use crate::ai_serving::{
     apply_codex_openai_special_headers, build_chatgpt_web_image_request_body,
     build_codex_openai_image_api_provider_request_body,
-    build_openai_image_api_provider_multipart_request,
     build_gemini_image_request_body_from_openai_image_request,
+    build_openai_image_api_provider_multipart_request,
     build_openai_image_api_provider_request_body, build_openai_image_provider_request_body,
     default_model_for_openai_image_operation, normalize_openai_image_request,
     request_conversion_direct_auth, CandidateFailureDiagnostic, GatewayProviderTransportSnapshot,

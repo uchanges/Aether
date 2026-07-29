@@ -232,8 +232,7 @@ pub use crate::formats::{
             project_codex_openai_image_api_request_body, project_openai_image_api_request_body,
             resolve_requested_openai_image_model_for_request, ChatGptWebImageRequestError,
             NormalizedOpenAiImageRequest, OpenAiImageMultipartProviderRequest,
-            OpenAiImageNormalizeOptions, OpenAiImageOperation,
-            OpenAiImageResponseFormat,
+            OpenAiImageNormalizeOptions, OpenAiImageOperation, OpenAiImageResponseFormat,
         },
         spec::{
             resolve_stream_spec as resolve_local_image_stream_spec,
