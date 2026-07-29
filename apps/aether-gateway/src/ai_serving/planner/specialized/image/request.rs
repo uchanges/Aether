@@ -18,6 +18,7 @@ use crate::ai_serving::transport::{
 use crate::ai_serving::{
     apply_codex_openai_special_headers, build_chatgpt_web_image_request_body,
     build_codex_openai_image_api_provider_request_body,
+    build_openai_image_api_provider_multipart_request,
     build_gemini_image_request_body_from_openai_image_request,
     build_openai_image_api_provider_request_body, build_openai_image_provider_request_body,
     default_model_for_openai_image_operation, normalize_openai_image_request,
@@ -45,6 +46,8 @@ pub(super) struct LocalOpenAiImageCandidatePayloadParts {
     pub(super) provider_api_format: String,
     pub(super) provider_request_headers: BTreeMap<String, String>,
     pub(super) provider_request_body: Value,
+    pub(super) provider_request_body_base64: Option<String>,
+    pub(super) content_type: String,
     pub(super) upstream_url: String,
     pub(super) input_summary: Value,
     pub(super) transport_profile: Option<ResolvedTransportProfile>,
@@ -228,6 +231,40 @@ pub(super) async fn resolve_local_openai_image_candidate_payload_parts(
         .await;
         return None;
     };
+    let requires_multipart = !is_chatgpt_web
+        && !is_codex
+        && !is_grok
+        && openai_image_edit_transport_uses_multipart(
+            transport.endpoint.config.as_ref(),
+            normalized_request.operation,
+        );
+    let multipart_request = requires_multipart
+        .then(|| {
+            build_openai_image_api_provider_multipart_request(
+                &normalized_request,
+                Some(prepared_candidate.mapped_model.as_str()),
+                upstream_is_stream,
+            )
+        })
+        .flatten();
+    if requires_multipart && multipart_request.is_none() {
+        mark_skipped_local_openai_image_candidate_with_failure_diagnostic(
+            state,
+            input,
+            trace_id,
+            candidate,
+            attempt.candidate_index,
+            &attempt.candidate_id,
+            "provider_request_body_missing",
+            CandidateFailureDiagnostic::provider_request_body_missing(
+                spec_metadata.api_format,
+                spec_metadata.api_format,
+                "openai_image_edit_multipart_request",
+            ),
+        )
+        .await;
+        return None;
+    }
     let Some(mut provider_request_headers) = (if is_grok {
         build_grok_browser_headers(GrokHeaderInput {
             transport,
@@ -288,6 +325,12 @@ pub(super) async fn resolve_local_openai_image_candidate_payload_parts(
             transport.key.decrypted_auth_config.as_deref(),
         );
     }
+    if let Some(multipart_request) = multipart_request.as_ref() {
+        provider_request_headers.insert(
+            "content-type".to_string(),
+            multipart_request.content_type.clone(),
+        );
+    }
     let requested_model = normalized_request
         .requested_model
         .clone()
@@ -308,6 +351,12 @@ pub(super) async fn resolve_local_openai_image_candidate_payload_parts(
         normalized_request.summary_json
     };
 
+    let content_type = multipart_request
+        .as_ref()
+        .map(|request| request.content_type.clone())
+        .unwrap_or_else(|| "application/json".to_string());
+    let provider_request_body_base64 = multipart_request.map(|request| request.body_bytes_base64);
+
     Some(LocalOpenAiImageCandidatePayloadParts {
         transport: Arc::clone(transport),
         auth_header,
@@ -317,11 +366,25 @@ pub(super) async fn resolve_local_openai_image_candidate_payload_parts(
         provider_api_format: spec_metadata.api_format.to_string(),
         provider_request_headers,
         provider_request_body,
+        provider_request_body_base64,
+        content_type,
         upstream_url,
         input_summary,
         transport_profile,
         upstream_is_stream,
     })
+}
+
+fn openai_image_edit_transport_uses_multipart(
+    config: Option<&Value>,
+    operation: crate::ai_serving::OpenAiImageOperation,
+) -> bool {
+    operation == crate::ai_serving::OpenAiImageOperation::Edit
+        && config
+            .and_then(Value::as_object)
+            .and_then(|config| config.get("openai_image_edit_transport"))
+            .and_then(Value::as_str)
+            .is_some_and(|value| value.trim().eq_ignore_ascii_case("multipart"))
 }
 
 async fn resolve_local_openai_image_to_gemini_candidate_payload_parts(
@@ -512,6 +575,8 @@ async fn resolve_local_openai_image_to_gemini_candidate_payload_parts(
         provider_api_format: provider_api_format.to_string(),
         provider_request_headers: resolved_headers.headers,
         provider_request_body: converted.body_json,
+        provider_request_body_base64: None,
+        content_type: "application/json".to_string(),
         upstream_url,
         input_summary: converted.summary_json,
         transport_profile: None,

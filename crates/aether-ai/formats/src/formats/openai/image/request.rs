@@ -48,6 +48,14 @@ pub struct NormalizedOpenAiImageRequest {
     user: Option<String>,
 }
 
+/// A binary OpenAI Images edit request ready for an upstream that requires the
+/// official `multipart/form-data` wire format.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpenAiImageMultipartProviderRequest {
+    pub content_type: String,
+    pub body_bytes_base64: String,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OpenAiImageNormalizeOptions {
     max_generation_count: u64,
@@ -584,6 +592,122 @@ pub fn build_openai_image_api_provider_request_body(
         request.operation,
         request.max_generation_count,
     )
+}
+
+/// Builds a real multipart request for strict OpenAI-compatible image-edit
+/// endpoints. JSON-compatible endpoints should continue to use
+/// [`build_openai_image_api_provider_request_body`].
+pub fn build_openai_image_api_provider_multipart_request(
+    request: &NormalizedOpenAiImageRequest,
+    mapped_model: Option<&str>,
+    upstream_is_stream: bool,
+) -> Option<OpenAiImageMultipartProviderRequest> {
+    if request.operation != OpenAiImageOperation::Edit {
+        return None;
+    }
+    let json_body =
+        build_openai_image_api_provider_request_body(request, mapped_model, upstream_is_stream)?;
+    let object = json_body.as_object()?;
+    let image_inputs = openai_image_api_inputs(object)?;
+    if image_inputs.is_empty() {
+        return None;
+    }
+
+    let boundary = format!("aether-image-{}", uuid::Uuid::new_v4().simple());
+    let mut bytes = Vec::new();
+    for (key, value) in object {
+        if matches!(key.as_str(), "image" | "images" | "mask") {
+            continue;
+        }
+        let value = multipart_text_value(value)?;
+        append_multipart_text_field(&mut bytes, &boundary, key, &value);
+    }
+    for (index, image) in image_inputs.into_iter().enumerate() {
+        let (mime_type, data) = multipart_image_data(image)?;
+        append_multipart_file_field(
+            &mut bytes,
+            &boundary,
+            "image",
+            &format!("image-{}.{}", index + 1, image_filename_extension(&mime_type)),
+            &mime_type,
+            &data,
+        );
+    }
+    if let Some(mask) = object.get("mask") {
+        let (mime_type, data) = multipart_image_data(mask)?;
+        append_multipart_file_field(
+            &mut bytes,
+            &boundary,
+            "mask",
+            &format!("mask.{}", image_filename_extension(&mime_type)),
+            &mime_type,
+            &data,
+        );
+    }
+    bytes.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    Some(OpenAiImageMultipartProviderRequest {
+        content_type: format!("multipart/form-data; boundary={boundary}"),
+        body_bytes_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+    })
+}
+
+fn multipart_text_value(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) => Some(value.clone()),
+        Value::Number(value) => Some(value.to_string()),
+        Value::Bool(value) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
+fn multipart_image_data(value: &Value) -> Option<(String, Vec<u8>)> {
+    let image_url = value
+        .as_object()?
+        .get("image_url")?
+        .as_str()?
+        .trim();
+    let encoded = image_url.strip_prefix("data:")?;
+    let (metadata, data) = encoded.split_once(',')?;
+    let mime_type = metadata.strip_suffix(";base64")?.trim();
+    if !mime_type.starts_with("image/") {
+        return None;
+    }
+    let data = base64::engine::general_purpose::STANDARD.decode(data.trim()).ok()?;
+    Some((mime_type.to_string(), data))
+}
+
+fn image_filename_extension(mime_type: &str) -> &'static str {
+    match mime_type.to_ascii_lowercase().as_str() {
+        "image/jpeg" => "jpg",
+        "image/webp" => "webp",
+        "image/gif" => "gif",
+        _ => "png",
+    }
+}
+
+fn append_multipart_text_field(bytes: &mut Vec<u8>, boundary: &str, name: &str, value: &str) {
+    bytes.extend_from_slice(
+        format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n")
+            .as_bytes(),
+    );
+}
+
+fn append_multipart_file_field(
+    bytes: &mut Vec<u8>,
+    boundary: &str,
+    name: &str,
+    filename: &str,
+    mime_type: &str,
+    data: &[u8],
+) {
+    bytes.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"; filename=\"{filename}\"\r\nContent-Type: {mime_type}\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    bytes.extend_from_slice(data);
+    bytes.extend_from_slice(b"\r\n");
 }
 
 pub fn build_codex_openai_image_api_provider_request_body(
@@ -1689,6 +1813,7 @@ mod tests {
 
     use super::{
         build_chatgpt_web_image_request_body, build_codex_openai_image_api_provider_request_body,
+        build_openai_image_api_provider_multipart_request,
         build_openai_image_api_provider_request_body, build_openai_image_provider_request_body,
         is_openai_image_stream_request, normalize_openai_image_quality,
         normalize_openai_image_request, normalize_openai_image_request_with_options,
@@ -2326,6 +2451,51 @@ mod tests {
         assert!(provider_request_body.get("input").is_none());
         assert!(provider_request_body.get("tools").is_none());
         assert!(provider_request_body.get("action").is_none());
+    }
+
+    #[test]
+    fn build_image_api_provider_multipart_edit_request_encodes_images_and_mask() {
+        let parts = request_parts("/v1/images/edits", Some("application/json"));
+        let request = normalize_openai_image_request(
+            &parts,
+            &json!({
+                "model": "gpt-image-2",
+                "prompt": "replace the background",
+                "images": [
+                    {"image_url": "data:image/png;base64,aW1hZ2U="},
+                    {"image_url": "data:image/jpeg;base64,c2Vjb25k"}
+                ],
+                "mask": "data:image/png;base64,bWFzaw==",
+                "size": "1024x1024",
+                "input_fidelity": "high"
+            }),
+            None,
+        )
+        .expect("edit request should normalize");
+
+        let multipart = build_openai_image_api_provider_multipart_request(
+            &request,
+            Some("mapped-edit-model"),
+            false,
+        )
+        .expect("strict upstream edit request should serialize as multipart");
+        let boundary = multipart
+            .content_type
+            .split_once("boundary=")
+            .map(|(_, boundary)| boundary)
+            .expect("content type should expose boundary");
+        let body = base64::engine::general_purpose::STANDARD
+            .decode(multipart.body_bytes_base64)
+            .expect("multipart body should be base64 encoded");
+
+        assert!(multipart.content_type.starts_with("multipart/form-data; boundary="));
+        assert!(body.starts_with(format!("--{boundary}\\r\\n").as_bytes()));
+        assert!(body.windows(b"name=\"model\"\r\n\r\nmapped-edit-model".len()).any(|part| {
+            part == b"name=\"model\"\r\n\r\nmapped-edit-model"
+        }));
+        assert_eq!(body.windows(b"name=\"image\"".len()).filter(|part| *part == b"name=\"image\"").count(), 2);
+        assert!(body.windows(b"name=\"mask\"".len()).any(|part| part == b"name=\"mask\""));
+        assert!(body.ends_with(format!("--{boundary}--\\r\\n").as_bytes()));
     }
 
     #[test]

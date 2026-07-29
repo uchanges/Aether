@@ -195,6 +195,25 @@
                 </div>
               </div>
 
+              <div
+                v-if="endpoint.api_format === 'openai:image' && !isEndpointConfigReadOnly"
+                class="flex items-center gap-3 rounded-md border border-border/60 px-3 py-2"
+              >
+                <div class="min-w-0 flex-1">
+                  <Label class="text-xs">图片编辑上游格式</Label>
+                  <p class="text-[10px] text-muted-foreground">仅影响 /v1/images/edits；严格 OpenAI 端点请选择 multipart。</p>
+                </div>
+                <select
+                  class="h-8 rounded-md border bg-background px-2 text-xs"
+                  :value="getOpenAiImageEditTransport(endpoint)"
+                  :disabled="savingEndpointId === endpoint.id"
+                  @change="onOpenAiImageEditTransportChange(endpoint, $event)"
+                >
+                  <option value="json">JSON / data URL</option>
+                  <option value="multipart">multipart/form-data</option>
+                </select>
+              </div>
+
               <!-- 请求/响应规则（请求头、请求体和响应头规则） -->
               <Collapsible
                 v-if="!isEndpointConfigReadOnly"
@@ -3416,6 +3435,40 @@ function getUpstreamStreamTooltip(endpoint: ProviderEndpoint): string {
   if (policy === 'force_stream') return legacyT('固定流式（点击切换为固定非流）')
   if (policy === 'force_non_stream') return legacyT('固定非流（点击切换为跟随请求）')
   return legacyT('跟随请求（点击切换为固定流式）')
+}
+
+function getOpenAiImageEditTransport(endpoint: ProviderEndpoint): 'json' | 'multipart' {
+  return String(endpoint.config?.openai_image_edit_transport || '').trim().toLowerCase() === 'multipart'
+    ? 'multipart'
+    : 'json'
+}
+
+async function setOpenAiImageEditTransport(endpoint: ProviderEndpoint, value: string) {
+  const transport = value === 'multipart' ? 'multipart' : 'json'
+  savingEndpointId.value = endpoint.id
+  try {
+    const merged: Record<string, unknown> = { ...(endpoint.config || {}) }
+    if (transport === 'multipart') {
+      merged.openai_image_edit_transport = 'multipart'
+    } else {
+      delete merged.openai_image_edit_transport
+    }
+    const updated = await updateEndpoint(endpoint.id, {
+      config: Object.keys(merged).length > 0 ? merged : null,
+    })
+    replaceLocalEndpoint(updated)
+    success(transport === 'multipart' ? '图片编辑将以 multipart/form-data 转发' : '图片编辑将以 JSON / data URL 转发')
+    emit('endpointUpdated')
+  } catch (error: unknown) {
+    showError(localizedApiError(error, '操作失败'), legacyT('错误'))
+  } finally {
+    savingEndpointId.value = null
+  }
+}
+
+function onOpenAiImageEditTransportChange(endpoint: ProviderEndpoint, event: Event) {
+  const value = (event.target as HTMLSelectElement | null)?.value || 'json'
+  void setOpenAiImageEditTransport(endpoint, value)
 }
 
 // 循环切换上游流式策略并直接保存
